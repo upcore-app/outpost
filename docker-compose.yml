@@ -1,6 +1,6 @@
 services:
   outpost:
-    image: ghcr.io/upcore/outpost:latest
+    image: ghcr.io/upcore-app/outpost:latest
     restart: unless-stopped
     ports:
       - "8080:8080"

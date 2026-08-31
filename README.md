@@ -1,6 +1,28 @@
-# outpost
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-outpost-duotone.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-outpost-duotone-dark.svg">
+    <img src="assets/logo-outpost-duotone.svg" alt="outpost" width="440">
+  </picture>
+</p>
 
-A remote check probe for [upcore](https://github.com/upcore/upcore).
+<p align="center">
+  <strong>A remote check probe for <a href="https://github.com/upcore-app/upcore">upcore</a>.</strong><br>
+  Monitor from more than one place. One static binary, no dependencies.
+</p>
+
+<p align="center">
+  <a href="LICENSE.md"><img alt="License: FSL-1.1-ALv2" src="https://img.shields.io/badge/license-FSL--1.1--ALv2-0f766e.svg"></a>
+  <img alt="Go 1.23" src="https://img.shields.io/badge/Go-1.23-00ADD8.svg">
+  <img alt="Dependencies: none" src="https://img.shields.io/badge/dependencies-none-4c1.svg">
+  <img alt="Image: ghcr.io/upcore-app/outpost" src="https://img.shields.io/badge/ghcr.io-upcore--app%2Foutpost-2496ED.svg">
+</p>
+
+<p align="center">
+  A partner project by <strong><a href="https://galaxybot.app">GalaxyBot</a></strong> and <strong><a href="https://hypeserv.com">HypeServ</a></strong>.
+</p>
+
+---
 
 An outpost runs somewhere upcore is not — another country, another provider, the
 other side of a firewall — and answers one question: *can this location reach
@@ -293,6 +315,22 @@ internal/server         routes, handlers, auth/logging/recovery middleware
 Images are built and pushed to GHCR only when a GitHub release is published; a
 push to a branch runs `go vet`, `go build` and `go test` and stops there.
 
+## Security
+
+The API key is a bearer token and the outpost will connect to whatever target
+upcore names, so where you put it and who can reach it matters. See
+[SECURITY.md](SECURITY.md) for the threat model, how to harden a deployment, and
+how to report a vulnerability privately.
+
+Please do not open a public issue for a security problem.
+
 ## License
 
-MIT
+[Functional Source License 1.1 with an Apache 2.0 future grant](LICENSE.md)
+(FSL-1.1-ALv2) — the same license as upcore.
+
+Use it, modify it, run it yourself, for anything that is not a competing
+commercial product or service. Two years after each version is published it
+becomes available under the Apache License 2.0.
+
+Copyright 2026 GalaxyBot &amp; HypeServ.

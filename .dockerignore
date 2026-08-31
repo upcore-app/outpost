@@ -13,10 +13,11 @@
 Dockerfile
 docker-compose.yml
 
-# Documentation. The build stage copies the whole tree, so anything left here
-# would sit in a layer of the build image for nothing.
+# Documentation and branding. The build stage copies the whole tree, so anything
+# left here would sit in a layer of the build image for nothing.
 *.md
 LICENSE
+assets
 
 # Tests run in CI against the source tree, never inside the image.
 *_test.go

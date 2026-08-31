@@ -1,0 +1,83 @@
+name: docker
+
+on:
+  # Branches only, not tags: publishing a release pushes a tag as well, and the
+  # release event below already runs the checks before it builds anything.
+  push:
+    branches: ['**']
+  pull_request:
+  release:
+    types: [published]
+  # The escape hatch: rebuild and push an image without cutting a release.
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check:
+    name: vet, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          # No third-party dependencies, so there is no module cache to restore.
+          cache: false
+
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./...
+
+  image:
+    name: build and push image
+    # Images are built only for a published release (or a manual run): a push to
+    # a branch runs the checks above and stops there.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A release of v1.2.3 publishes 1.2.3, 1.2 and 1, so a deployment can pin
+      # how far it wants to follow. `latest` moves only for a full release — a
+      # pre-release must not become what `docker compose up` pulls by default.
+      # A manual run has no version to read, so it gets the commit sha.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.event.release.tag_name || github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

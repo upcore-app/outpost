@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/upcore/outpost/internal/check"
+	"github.com/upcore-app/outpost/internal/check"
 )
 
 type healthResponse struct {

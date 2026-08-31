@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/upcore/outpost/internal/apikey"
+	"github.com/upcore-app/outpost/internal/apikey"
 )
 
 const bearerPrefix = "bearer "

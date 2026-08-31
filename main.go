@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/upcore/outpost/internal/apikey"
-	"github.com/upcore/outpost/internal/config"
-	"github.com/upcore/outpost/internal/server"
+	"github.com/upcore-app/outpost/internal/apikey"
+	"github.com/upcore-app/outpost/internal/config"
+	"github.com/upcore-app/outpost/internal/server"
 )
 
 // version is a var, not a const, so the build can stamp it:
