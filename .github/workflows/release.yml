@@ -24,7 +24,7 @@ permissions:
 jobs:
   binaries:
     name: build and attach binaries
-    runs-on: ubuntu-latest
+    runs-on: onesrv
     steps:
       - uses: actions/checkout@v5
         with:
