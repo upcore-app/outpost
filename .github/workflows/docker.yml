@@ -20,9 +20,9 @@ jobs:
     name: vet, build, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.23"
           # No third-party dependencies, so there is no module cache to restore.
@@ -32,20 +32,100 @@ jobs:
       - run: go build ./...
       - run: go test ./...
 
+  # One runner per architecture, each building only its own. Emulating arm64
+  # with QEMU made the alpine layer and every build step run interpreted; the
+  # arm64 runner builds natively instead.
+  #
+  # Neither job can therefore push a tag — a tag names one manifest, and two
+  # jobs would overwrite each other's. They push *by digest* (an image with no
+  # tag) and hand the digests to `manifest`, which is where the tags are made.
   image:
-    name: build and push image
+    name: build and push image (${{ matrix.platform }})
     # Images are built only for a published release (or a manual run): a push to
     # a branch runs the checks above and stops there.
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: check
+    strategy:
+      # Both architectures are pushed together or not at all, but letting the
+      # second one finish makes the log say whether a failure is arch-specific.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # `linux/amd64` is not a legal artifact name or cache scope.
+      - name: Platform slug
+        run: echo "PLATFORM_PAIR=${{ matrix.platform }}" | tr '/' '-' >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No `tags:` here on purpose — see the note on this job. The labels still
+      # belong on the per-architecture image, so they are computed twice.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.event.release.tag_name || github.ref_name }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Scoped per architecture: one cache for both would have each run
+          # evict the other's layers.
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+
+      # The digest is the whole payload: the blobs are already in the registry.
+      # An empty file named after it is all `manifest` needs to address it.
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Where the tags come into existence: one manifest list pointing at the
+  # per-architecture images the matrix pushed.
+  manifest:
+    name: push the manifest
+    needs: image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/download-artifact@v5
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
 
@@ -70,14 +150,9 @@ jobs:
             type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
             type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ github.event.release.tag_name || github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Push the manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
