@@ -26,23 +26,26 @@ func checkSSL(ctx context.Context, c Check, timeout time.Duration) Result {
 		return Result{Status: StatusDown, Message: "Kein gültiger Port angegeben"}
 	}
 
-	deadline, cancel := context.WithTimeout(ctx, timeout)
+	// tls.Dialer over DialWithDialer: the context bounds the handshake as well
+	// as the dial, so a batch abandoned by upcore stops here instead of holding
+	// a socket open for the full timeout.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	dialer := &net.Dialer{Timeout: timeout}
-	if d, ok := deadline.Deadline(); ok {
-		dialer.Deadline = d
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{},
+		// InsecureSkipVerify hands us the certificate the server actually
+		// presents instead of an error: the whole point of this check is to
+		// *report* why a certificate is bad and how long a good one has left,
+		// which requires holding the chain. The verification below is the real
+		// verdict — nothing is trusted just because the handshake completed.
+		Config: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         host,
+		},
 	}
 
 	start := time.Now()
-	// InsecureSkipVerify hands us the certificate the server actually presents
-	// instead of an error: the whole point of this check is to *report* why a
-	// certificate is bad and how long a good one has left, which requires
-	// holding the chain. The verification below is the real verdict — nothing
-	// is trusted just because the handshake completed.
-	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, strconv.Itoa(port)), &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         host,
-	})
+	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
@@ -51,6 +54,9 @@ func checkSSL(ctx context.Context, c Check, timeout time.Duration) Result {
 		return Result{Status: StatusDown, Message: trimMessage(err.Error())}
 	}
 	latency := latencyMS(time.Since(start))
+	// tls.Dialer documents that a successful DialContext always yields a
+	// *tls.Conn, which is the only way to reach the peer's certificates.
+	conn := raw.(*tls.Conn)
 	defer conn.Close()
 
 	certs := conn.ConnectionState().PeerCertificates
@@ -70,16 +76,12 @@ func checkSSL(ctx context.Context, c Check, timeout time.Duration) Result {
 	for _, cert := range certs[1:] {
 		intermediates.AddCert(cert)
 	}
-	// A nil Roots pool means the system pool, which is what we want; asking for
-	// it explicitly only lets a broken store surface as an error here.
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = nil
-	}
+	// Roots is left nil on purpose: Verify then uses the system pool, and
+	// reports a broken or empty store as a verification error of its own rather
+	// than one this code would have to invent a message for.
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		DNSName:       host,
 		Intermediates: intermediates,
-		Roots:         roots,
 		CurrentTime:   now,
 	}); err != nil {
 		return Result{Status: StatusDown, Latency: latency, Message: trimMessage("Zertifikat ungültig: " + err.Error())}

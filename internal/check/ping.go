@@ -13,10 +13,13 @@ import (
 // hostPattern is an allow-list, not a sanitiser: the host is handed to a child
 // process, and while exec never involves a shell here, a target that cannot be
 // a hostname or an IP is a bug in the request rather than something to probe.
-var hostPattern = regexp.MustCompile(`^[a-zA-Z0-9.:_-]+$`)
+// A leading dash is excluded on purpose — the host is the last argument, so
+// "-s65000" or "-f" would be read by ping as an option, not as a destination.
+var hostPattern = regexp.MustCompile(`^[a-zA-Z0-9._:][a-zA-Z0-9.:_-]*$`)
 
-// rttPattern matches both iputils ("time=12.3 ms") and busybox ("time=12.3 ms"),
-// as well as the "time<1 ms" a sub-millisecond reply produces.
+// rttPattern matches the reply line of both ping implementations that ship in
+// alpine — iputils' "time=12.3 ms" and busybox's "time=12.3 ms" — as well as
+// the "time<1 ms" a sub-millisecond reply produces.
 var rttPattern = regexp.MustCompile(`time[=<]([\d.]+)\s*ms`)
 
 func checkPing(ctx context.Context, c Check, timeout time.Duration) Result {

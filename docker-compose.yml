@@ -23,6 +23,9 @@ services:
       # OUTPOST_MAX_CHECKS: "200"
       # OUTPOST_LOG_REQUESTS: "true"
       OUTPOST_ADDR: ":8080"
+      # Must match the volume mount above, or the key is regenerated on every
+      # restart and upcore stops being able to authenticate.
+      OUTPOST_DATA_DIR: "/data"
     sysctls:
       # Lets the unprivileged container user open ICMP sockets, which is what
       # ping needs without root. Docker grants NET_RAW by default, so this is a

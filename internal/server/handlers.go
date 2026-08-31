@@ -57,7 +57,7 @@ func (s *server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 		CheckTypes:     check.Types(),
 		MaxConcurrency: s.cfg.MaxConcurrency,
 		MaxChecks:      s.cfg.MaxChecks,
-		StartedAt:      s.started.Format(time.RFC3339),
+		StartedAt:      s.startedAt,
 		UptimeSeconds:  int(time.Since(s.started).Seconds()),
 	})
 }

@@ -1,13 +1,30 @@
+# Version control, CI and editor state. .git is by far the largest thing in the
+# build context and none of it is needed to compile the binary.
 .git
 .github
 .gitignore
 .idea
+.vscode
+.claude
+.DS_Store
+
+# The image's own definition.
 .dockerignore
 Dockerfile
 docker-compose.yml
-README.md
-LICENSE
+
+# Documentation. The build stage copies the whole tree, so anything left here
+# would sit in a layer of the build image for nothing.
 *.md
+LICENSE
+
+# Tests run in CI against the source tree, never inside the image.
+*_test.go
+testdata
+
+# Local run artifacts.
 data
+outpost
 *.test
+*.out
 coverage.*
