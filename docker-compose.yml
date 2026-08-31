@@ -1,0 +1,34 @@
+services:
+  outpost:
+    image: ghcr.io/upcore/outpost:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Keeps the generated API key across restarts and image updates.
+      - outpost-data:/data
+    environment:
+      # Everything here is optional. Location, provider and country are pure
+      # metadata: upcore reads them from /v1/info to label this probe.
+      # OUTPOST_LOCATION: Frankfurt
+      # OUTPOST_PROVIDER: Hetzner
+      # OUTPOST_COUNTRY: DE
+      #
+      # Set OUTPOST_API_KEY to pin the key instead of letting the outpost
+      # generate one on first start (the generated key is printed once and
+      # stored in /data/apikey).
+      # OUTPOST_API_KEY: opk_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      #
+      # OUTPOST_MAX_CONCURRENCY: "50"
+      # OUTPOST_MAX_CHECKS: "200"
+      # OUTPOST_LOG_REQUESTS: "true"
+      OUTPOST_ADDR: ":8080"
+    sysctls:
+      # Lets the unprivileged container user open ICMP sockets, which is what
+      # ping needs without root. Docker grants NET_RAW by default, so this is a
+      # belt-and-braces setting; drop it if your kernel or runtime rejects it
+      # (Docker Desktop on macOS/Windows does).
+      net.ipv4.ping_group_range: "0 2147483647"
+
+volumes:
+  outpost-data:
