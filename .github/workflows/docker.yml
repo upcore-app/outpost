@@ -136,8 +136,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # A release of v1.2.3 publishes 1.2.3, 1.2 and 1, so a deployment can pin
-      # how far it wants to follow. `latest` moves only for a full release — a
-      # pre-release must not become what `docker compose up` pulls by default.
+      # how far it wants to follow. `latest` is pushed by every build that gets
+      # this far — a release, a pre-release or a manual run — so the image
+      # `docker compose up` pulls by default is always the newest one built.
       # A manual run has no version to read, so it gets the commit sha.
       - id: meta
         uses: docker/metadata-action@v5
@@ -147,7 +148,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=raw,value=latest
             type=sha,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Push the manifest
