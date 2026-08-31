@@ -82,7 +82,11 @@ func Masked(token string) string {
 // A data dir that cannot be written is not fatal — the outpost still serves,
 // with a key that changes on every restart — because a probe with no history
 // to lose is easier to re-enrol than to debug while it refuses to start.
-func Resolve(override, dataDir string, log *slog.Logger) (string, error) {
+//
+// announce prints the key in a banner. An auto-enrolling outpost passes false:
+// it sends the key to upcore itself, and telling the operator to copy something
+// they never have to see is an invitation to leak it.
+func Resolve(override, dataDir string, announce bool, log *slog.Logger) (string, error) {
 	if override != "" {
 		if !Valid(override) {
 			return "", fmt.Errorf("OUTPOST_API_KEY is not a valid key (expected %s<8 hex>_<48 hex>)", Prefix)
@@ -107,12 +111,16 @@ func Resolve(override, dataDir string, log *slog.Logger) (string, error) {
 	if err := persist(path, token); err != nil {
 		log.Warn("data dir is not writable: the API key is kept in memory only and WILL CHANGE on the next restart",
 			"path", path, "error", err)
-		banner(token, "")
+		if announce {
+			banner(token, "")
+		}
 		return token, nil
 	}
 
 	log.Info("generated a new API key", "path", path, "key", Masked(token))
-	banner(token, path)
+	if announce {
+		banner(token, path)
+	}
 	return token, nil
 }
 

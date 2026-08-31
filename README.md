@@ -29,16 +29,28 @@ other side of a firewall — and answers one question: *can this location reach
 this target right now?* upcore dispatches a batch of checks over HTTP, the
 outpost runs them concurrently and returns one result per check.
 
-**The dispatch model is one-way.** upcore calls the outpost; the outpost never
-calls back, never opens a connection to upcore, and needs no inbound access to
+**The dispatch model is one-way.** upcore calls the outpost; the outpost does
+not call back, opens no connection to upcore, and needs no inbound access to
 anything but its own port. It keeps no history, no queue and no database: the
 only state on disk is its API key. Losing an outpost costs you nothing but the
 vantage point — the monitors, heartbeats and status pages all live in upcore.
+
+The one exception is [auto-setup](#auto-setup): deployed with a setup key, the
+outpost posts to upcore exactly once, at first start, to register itself.
+Everything after that is inbound again.
 
 Written in Go with the standard library only: no third-party modules, no
 `go.sum`, a single static binary.
 
 ## Quick start
+
+The short path is to let upcore write the deploy command for you: **Admin →
+Outposts → Add** creates a one-time setup key and hands you a compose file, a
+`docker run`, an install script line or a Kubernetes manifest with the key
+already in it. Run it, and the outpost registers itself — see
+[Auto-setup](#auto-setup).
+
+By hand it is two commands:
 
 ```bash
 docker compose up -d
@@ -48,6 +60,16 @@ docker compose logs outpost | grep opk_
 The second command prints the API key the outpost generated on first start. Copy
 it into upcore (see [Wiring it into upcore](#wiring-it-into-upcore)) — the key is
 printed once, in a banner, and never again.
+
+Or with the install script, which writes a compose file to `/opt/outpost` and
+starts it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/upcore-app/outpost/main/install.sh | sudo sh -s -- \
+  --upcore-url https://status.example.com \
+  --setup-key ost_… \
+  --location Frankfurt
+```
 
 Verify it works:
 
@@ -80,9 +102,51 @@ start.
 | `OUTPOST_MAX_CONCURRENCY` | `50` | Probes in flight at once, clamped to [1, 500] |
 | `OUTPOST_MAX_CHECKS` | `200` | Checks per request, clamped to [1, 1000] |
 | `OUTPOST_LOG_REQUESTS` | `true` | One log line per request |
+| `OUTPOST_UPCORE_URL` | `""` | upcore instance to enroll with, e.g. `https://status.example.com` |
+| `OUTPOST_SETUP_KEY` | `""` | One-time setup key from upcore (`ost_…`). Needs `OUTPOST_UPCORE_URL` |
+| `OUTPOST_PUBLIC_URL` | `""` | Where upcore reaches this outpost. Defaults to the source address of the enrollment plus `OUTPOST_ADDR`'s port |
 
 `location`, `provider` and `country` are metadata only. They change nothing
 about how checks run; upcore reads them from `/v1/info` to label the probe.
+
+## Auto-setup
+
+An outpost deployed with `OUTPOST_UPCORE_URL` and `OUTPOST_SETUP_KEY` registers
+itself instead of being typed in. In upcore, **Admin → Outposts → Add** mints the
+key and shows the deploy command with it already filled in.
+
+What happens on first start:
+
+1. The outpost resolves its API key as always — generated and stored in `/data`,
+   or pinned with `OUTPOST_API_KEY`.
+2. It waits for its own listener, then posts once to
+   `POST <upcore>/api/outposts/enroll`:
+   `{"token": "ost_…", "apiKey": "opk_…", "port": 8080}`, plus `"url"` when
+   `OUTPOST_PUBLIC_URL` is set.
+3. **upcore calls back.** It asks `GET /v1/info` at that URL with the key it was
+   just given, and writes nothing unless the outpost answers. A wrong URL, a
+   closed port or a proxy in the way fails here, at deploy time.
+4. On success the outpost writes `/data/enrolled` and never enrolls again. The
+   setup key is single use and expires after 24 hours.
+
+Where upcore should call back is the one thing the outpost cannot always know.
+Without `OUTPOST_PUBLIC_URL`, upcore uses the source address it saw the
+enrollment come from and the port the outpost reported — right for a plain
+`docker run` on a public host, wrong behind a NAT, a reverse proxy or in
+Kubernetes. Set it there:
+
+```
+OUTPOST_PUBLIC_URL: https://fra.example.com
+```
+
+Failures are retried with a growing backoff for about eight minutes, except the
+three that no retry can fix — an unknown, spent or expired key. Whatever
+happens, the outpost keeps serving: a probe that could not enroll is still a
+working probe, and it can be added by hand.
+
+In Kubernetes, pin `OUTPOST_API_KEY` in the secret. A pod has no volume to keep
+a generated key in, so without it every restart would invent a new key while
+upcore still presents the old one.
 
 ## The API key
 
@@ -263,13 +327,16 @@ environment, use a `tcp` check instead of a `ping` check.
 
 ## Wiring it into upcore
 
+With [auto-setup](#auto-setup) steps 1–4 are the deploy command; skip to the
+check strategy below. By hand:
+
 1. Deploy the outpost where you want to measure from, and make its port
    reachable by upcore. Put TLS in front of it if it crosses the internet: the
    API key is a bearer token.
 2. Grab the key: `docker compose exec outpost cat /data/apikey`.
-3. In upcore: **Admin → Outposts → New**. Give it a name, the base URL (e.g.
-   `https://fra.example.com`) and the API key; location, provider and country
-   are prefilled from what the outpost reports about itself.
+3. In upcore: **Admin → Outposts → Add → Manual**. Give it a name, the base URL
+   (e.g. `https://fra.example.com`) and the API key; location, provider and
+   country are prefilled from what the outpost reports about itself.
 4. Hit **Test connection**. upcore calls `GET /v1/info` with the key — that is
    the whole handshake, and it is the point at which a wrong URL, a wrong key or
    a firewall shows up rather than three days later in a false incident.
@@ -310,6 +377,7 @@ internal/config         environment parsing, clamping, warnings
 internal/apikey         key format, constant-time comparison, resolution
 internal/check          check types, dispatcher, concurrency limiter, probes
 internal/server         routes, handlers, auth/logging/recovery middleware
+internal/enroll         the one outbound call: auto-setup against upcore
 ```
 
 Images are built and pushed to GHCR only when a GitHub release is published; a

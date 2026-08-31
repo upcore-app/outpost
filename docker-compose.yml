@@ -8,6 +8,18 @@ services:
       # Keeps the generated API key across restarts and image updates.
       - outpost-data:/data
     environment:
+      # Auto-setup. With these two the outpost registers itself: it posts its
+      # own API key to upcore once, upcore calls back on /v1/info to confirm it
+      # is really reachable, and the outpost appears under Admin → Outposts. The
+      # setup key is single use and valid for 24 hours — upcore generates it,
+      # along with this whole file, when you add an outpost.
+      # OUTPOST_UPCORE_URL: https://status.example.com
+      # OUTPOST_SETUP_KEY: ost_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      #
+      # Where upcore can reach *this* outpost. Only needed when that is not the
+      # address the enrollment appears to come from — behind a proxy or a NAT.
+      # OUTPOST_PUBLIC_URL: https://fra.example.com
+      #
       # Everything here is optional. Location, provider and country are pure
       # metadata: upcore reads them from /v1/info to label this probe.
       # OUTPOST_LOCATION: Frankfurt
@@ -24,7 +36,9 @@ services:
       # OUTPOST_LOG_REQUESTS: "true"
       OUTPOST_ADDR: ":8080"
       # Must match the volume mount above, or the key is regenerated on every
-      # restart and upcore stops being able to authenticate.
+      # restart and upcore stops being able to authenticate. It also holds the
+      # `enrolled` marker, which is what keeps a restart from re-presenting a
+      # setup key that has already been spent.
       OUTPOST_DATA_DIR: "/data"
     sysctls:
       # Lets the unprivileged container user open ICMP sockets, which is what

@@ -119,7 +119,7 @@ func TestResolve(t *testing.T) {
 
 	t.Run("override wins and is not persisted", func(t *testing.T) {
 		dir := t.TempDir()
-		got, err := Resolve(override, dir, quiet())
+		got, err := Resolve(override, dir, true, quiet())
 		if err != nil {
 			t.Fatalf("Resolve() failed: %v", err)
 		}
@@ -134,14 +134,14 @@ func TestResolve(t *testing.T) {
 	})
 
 	t.Run("malformed override is fatal", func(t *testing.T) {
-		if _, err := Resolve("nonsense", t.TempDir(), quiet()); err == nil {
+		if _, err := Resolve("nonsense", t.TempDir(), true, quiet()); err == nil {
 			t.Error("Resolve() accepted a malformed OUTPOST_API_KEY, want an error")
 		}
 	})
 
 	t.Run("generates once then reuses", func(t *testing.T) {
 		dir := t.TempDir()
-		first, err := Resolve("", dir, quiet())
+		first, err := Resolve("", dir, true, quiet())
 		if err != nil {
 			t.Fatalf("Resolve() failed: %v", err)
 		}
@@ -161,7 +161,7 @@ func TestResolve(t *testing.T) {
 
 		// A restart has to keep the outpost's identity, or upcore would need
 		// re-enrolling every time the container is recreated.
-		second, err := Resolve("", dir, quiet())
+		second, err := Resolve("", dir, true, quiet())
 		if err != nil {
 			t.Fatalf("Resolve() failed: %v", err)
 		}
@@ -175,7 +175,7 @@ func TestResolve(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, FileName), []byte("garbage\n"), 0o600); err != nil {
 			t.Fatalf("seeding the key file failed: %v", err)
 		}
-		got, err := Resolve("", dir, quiet())
+		got, err := Resolve("", dir, true, quiet())
 		if err != nil {
 			t.Fatalf("Resolve() failed: %v", err)
 		}

@@ -23,6 +23,16 @@ type Config struct {
 	MaxConcurrency int
 	MaxChecks      int
 	LogRequests    bool
+
+	// Auto-setup. All three are empty in a hand-registered deployment; the two
+	// below go together, and internal/enroll says so when only one is set.
+	//
+	// UpcoreURL and SetupKey come from the deploy command upcore generated;
+	// PublicURL is only needed where the address upcore sees is not the address
+	// it can call back — behind a proxy, a NAT, or in Kubernetes.
+	UpcoreURL string
+	SetupKey  string
+	PublicURL string
 }
 
 const (
@@ -54,6 +64,9 @@ func Load(log *slog.Logger) Config {
 		MaxConcurrency: envInt(log, "OUTPOST_MAX_CONCURRENCY", defaultMaxConcurrency, minConcurrency, maxConcurrency),
 		MaxChecks:      envInt(log, "OUTPOST_MAX_CHECKS", defaultMaxChecks, minChecks, maxChecks),
 		LogRequests:    envBool(log, "OUTPOST_LOG_REQUESTS", true),
+		UpcoreURL:      strings.TrimRight(env("OUTPOST_UPCORE_URL", ""), "/"),
+		SetupKey:       env("OUTPOST_SETUP_KEY", ""),
+		PublicURL:      strings.TrimRight(env("OUTPOST_PUBLIC_URL", ""), "/"),
 	}
 
 	if country := env("OUTPOST_COUNTRY", ""); country != "" {
