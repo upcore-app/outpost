@@ -155,3 +155,69 @@ func TestRunGivesUpOnRefusedKey(t *testing.T) {
 		t.Fatalf("a refused enrollment must not leave a marker (err=%v)", err)
 	}
 }
+
+// The addresses reported to upcore decide where it calls back, so the filter
+// that produces them is worth pinning down: anything unroutable in the list
+// only spends one of upcore's connection attempts on an address that cannot
+// answer.
+func TestRoutable(t *testing.T) {
+	cases := []struct {
+		address string
+		want    bool
+	}{
+		{"62.238.8.178", true},
+		{"2a01:4f9:c015:1441::1", true},
+		{"8.8.8.8", true},
+		{"10.0.0.5", false},        // RFC 1918
+		{"172.16.3.1", false},      // RFC 1918
+		{"192.168.1.10", false},    // RFC 1918
+		{"100.64.0.1", false},      // carrier-grade NAT
+		{"100.127.255.254", false}, // carrier-grade NAT, upper edge
+		{"100.128.0.1", true},      // just outside 100.64.0.0/10
+		{"127.0.0.1", false},       // loopback
+		{"169.254.10.1", false},    // link-local
+		{"0.0.0.0", false},         // unspecified
+		{"224.0.0.1", false},       // multicast
+		{"::1", false},             // loopback
+		{"fe80::1", false},         // link-local
+		{"fd00::1", false},         // unique local
+		{"ff02::1", false},         // multicast
+	}
+
+	for _, tc := range cases {
+		ip := net.ParseIP(tc.address)
+		if ip == nil {
+			t.Fatalf("%s does not parse", tc.address)
+		}
+		if got := routable(ip); got != tc.want {
+			t.Errorf("routable(%s) = %v, want %v", tc.address, got, tc.want)
+		}
+	}
+}
+
+// A nil address reaches routable() whenever an interface hands back an address
+// type localAddresses does not know, so it must not panic.
+func TestRoutableNil(t *testing.T) {
+	if routable(nil) {
+		t.Fatal("a nil address must not be reported")
+	}
+}
+
+// localAddresses runs against whatever interfaces the test machine has, so it
+// can only assert the invariant: everything it returns is routable, and the
+// list is capped.
+func TestLocalAddressesAreRoutable(t *testing.T) {
+	addresses := localAddresses()
+	if len(addresses) > maxAddresses {
+		t.Fatalf("returned %d addresses, cap is %d", len(addresses), maxAddresses)
+	}
+	for _, address := range addresses {
+		ip := net.ParseIP(address)
+		if ip == nil {
+			t.Fatalf("%q is not a parseable address", address)
+		}
+		if !routable(ip) {
+			t.Errorf("%s is not routable but was reported", address)
+		}
+	}
+}

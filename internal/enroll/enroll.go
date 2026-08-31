@@ -90,6 +90,11 @@ type request struct {
 	APIKey string `json:"apiKey"`
 	URL    string `json:"url,omitempty"`
 	Port   int    `json:"port,omitempty"`
+	// Addresses are this host's own globally routable addresses, so upcore does
+	// not have to guess where to call back. It otherwise falls back to the
+	// source address of this request, which behind a CDN or a reverse proxy is
+	// the edge that forwarded it rather than this outpost.
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 type response struct {
@@ -200,10 +205,11 @@ func Run(ctx context.Context, opts Options, log *slog.Logger) {
 
 func submit(ctx context.Context, opts Options) (response, error) {
 	body := request{
-		Token:  opts.SetupKey,
-		APIKey: opts.APIKey,
-		URL:    strings.TrimRight(strings.TrimSpace(opts.PublicURL), "/"),
-		Port:   port(opts.Addr),
+		Token:     opts.SetupKey,
+		APIKey:    opts.APIKey,
+		URL:       strings.TrimRight(strings.TrimSpace(opts.PublicURL), "/"),
+		Port:      port(opts.Addr),
+		Addresses: localAddresses(),
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -308,6 +314,78 @@ func dialTarget(addr string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, portPart)
+}
+
+// maxAddresses caps what we report about ourselves. Every entry costs upcore a
+// connection attempt inside its verification budget, and a host with more than
+// a handful of routable addresses does not become easier to reach by listing
+// all of them.
+const maxAddresses = 8
+
+// localAddresses returns this host's own globally routable addresses, IPv4
+// first: upcore tries them in order, and an IPv4 address is the more likely of
+// the two to be reachable from wherever upcore runs.
+//
+// Only addresses that could be reached from the internet are reported. A probe
+// behind NAT sees an RFC 1918 address and a container sees the bridge subnet,
+// and neither says anything about where upcore should call back — such a
+// deployment needs OUTPOST_PUBLIC_URL, which is a statement rather than a guess.
+//
+// A failure here is not worth reporting: the list is an optimisation, and upcore
+// still has the source address of the enrollment to fall back on.
+func localAddresses() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	var v4, v6 []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if !routable(ip) {
+				continue
+			}
+			if ip.To4() != nil {
+				v4 = append(v4, ip.String())
+			} else {
+				v6 = append(v6, ip.String())
+			}
+		}
+	}
+
+	all := append(v4, v6...)
+	if len(all) > maxAddresses {
+		all = all[:maxAddresses]
+	}
+	return all
+}
+
+// routable rules out everything that cannot be reached from somewhere else:
+// loopback, link-local, multicast and the unspecified address (IsGlobalUnicast),
+// RFC 1918 and unique local addresses (IsPrivate), and carrier-grade NAT, which
+// IsPrivate does not cover.
+func routable(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	return true
 }
 
 // port is what upcore appends to the source address when the deployment did not

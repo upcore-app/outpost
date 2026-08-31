@@ -146,8 +146,11 @@ What happens on first start:
    pinned with `OUTPOST_API_KEY`.
 2. It waits for its own listener, then posts once to
    `POST <upcore>/api/outposts/enroll`:
-   `{"token": "ost_…", "apiKey": "opk_…", "port": 8080}`, plus `"url"` when
-   `OUTPOST_PUBLIC_URL` is set.
+   `{"token": "ost_…", "apiKey": "opk_…", "port": 8080, "addresses": [...]}`,
+   plus `"url"` when `OUTPOST_PUBLIC_URL` is set. `addresses` are this host's own
+   globally routable interface addresses — private, loopback, link-local and
+   carrier-grade NAT ranges are left out, because none of them tells upcore
+   anything about where to call back.
 3. **upcore calls back.** It asks `GET /v1/info` with the key it was just given,
    trying every address the outpost could be at — the one it reported, and the
    source address of the enrollment — repeatedly, for about twenty seconds. A
@@ -164,11 +167,17 @@ port is enough to make it go green; nothing has to be deployed again. Until it
 verifies, no checks are dispatched to it, so an unreachable probe cannot become
 a location that silently never votes.
 
-Where upcore should call back is the one thing the outpost cannot always know.
-Without `OUTPOST_PUBLIC_URL`, upcore uses the source address it saw the
-enrollment come from and the port the outpost reported — right for a plain
-`docker run` on a public host, wrong behind a NAT, a reverse proxy or in
-Kubernetes. Set it there:
+upcore tries the candidates in that order: an explicit `OUTPOST_PUBLIC_URL`
+first, then the addresses the outpost reported about itself, and only last the
+source address of the enrollment. That order matters — behind a CDN or a reverse
+proxy the source address is the edge that forwarded the request, not the probe.
+An enrollment through Cloudflare arrives from a Cloudflare address, and without
+the reported list upcore would record *that* as the outpost.
+
+What none of it can guess is a NATed or port-forwarded deployment: the outpost
+then only sees an RFC 1918 address, which is correctly left out of the list, and
+the source address is the NAT gateway rather than a published port. Set the URL
+explicitly there:
 
 ```
 OUTPOST_PUBLIC_URL: https://fra.example.com
