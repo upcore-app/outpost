@@ -97,6 +97,17 @@ type response struct {
 	Name    string `json:"name"`
 	URL     string `json:"url"`
 	Adopted bool   `json:"adopted"`
+	// Verified is false when upcore registered the outpost but could not reach
+	// it back yet — it answers 202 rather than 201 for that. The setup key is
+	// spent either way, so this is nothing to retry from here: upcore keeps
+	// trying on its side, and what is left to do is on this host. Error says
+	// what stopped it.
+	//
+	// A pointer because an upcore that predates the field sends no `verified`
+	// at all, and a plain bool would read that silence as "not verified".
+	// submit() fills it in from the status code in that case.
+	Verified *bool  `json:"verified"`
+	Error    string `json:"error"`
 }
 
 // permanentError is a refusal no retry can fix: a wrong, spent or expired key.
@@ -150,6 +161,15 @@ func Run(ctx context.Context, opts Options, log *slog.Logger) {
 				"id", result.ID,
 				"url", result.URL,
 				"adopted", result.Adopted)
+			// Registered but not reached: the key is spent, so retrying here
+			// would only burn the backoff on a 409. The fix is on this host,
+			// and upcore keeps probing until it lands.
+			if result.Verified != nil && !*result.Verified {
+				log.Warn("upcore registered this outpost but could not reach it back yet; "+
+					"open the port for upcore or set OUTPOST_PUBLIC_URL — upcore keeps retrying",
+					"url", result.URL,
+					"reason", result.Error)
+			}
 			writeMarker(marker, opts.UpcoreURL, result, log)
 			return
 		}
@@ -213,6 +233,12 @@ func submit(ctx context.Context, opts Options) (response, error) {
 		var parsed response
 		if err := json.Unmarshal(raw, &parsed); err != nil {
 			return response{}, fmt.Errorf("upcore answered %d with an unreadable body: %w", res.StatusCode, err)
+		}
+		if parsed.Verified == nil {
+			// 202 Accepted is upcore saying "registered, but I have not reached
+			// you yet". Anything else in the 2xx range means it did.
+			verified := res.StatusCode != http.StatusAccepted
+			parsed.Verified = &verified
 		}
 		return parsed, nil
 	}

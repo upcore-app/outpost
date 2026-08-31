@@ -45,12 +45,46 @@ Written in Go with the standard library only: no third-party modules, no
 ## Quick start
 
 The short path is to let upcore write the deploy command for you: **Admin →
-Outposts → Add** creates a one-time setup key and hands you a compose file, a
-`docker run`, an install script line or a Kubernetes manifest with the key
+Outposts → Add** creates a one-time setup key and hands you an install script
+line, a `docker run`, a compose file or a Kubernetes manifest with the key
 already in it. Run it, and the outpost registers itself — see
 [Auto-setup](#auto-setup).
 
-By hand it is two commands:
+### As a systemd service, without Docker
+
+The install script downloads one binary, installs it as a systemd service and
+waits until the outpost has registered itself:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/upcore-app/outpost/main/install.sh | sudo sh -s -- \
+  --upcore-url https://status.example.com \
+  --setup-key ost_… \
+  --location Frankfurt
+```
+
+It owns exactly four paths:
+
+| Path | What |
+| --- | --- |
+| `/usr/local/bin/outpost` | the binary |
+| `/etc/outpost/outpost.env` | the configuration (`0640`, readable by the service user) |
+| `/etc/systemd/system/outpost.service` | the unit |
+| `/var/lib/outpost` | the API key and the enrollment marker (`0700`) |
+
+Running it again upgrades in place: the binary is replaced, the data directory
+is left alone, and any option not given again is carried over from the existing
+configuration. So a bare `install.sh` is the upgrade command, and because the
+API key lives in the data directory, upcore keeps talking to the same outpost.
+
+```bash
+systemctl status outpost      # is it running
+journalctl -u outpost -f      # what is it doing
+sudo sh install.sh --uninstall   # remove everything but /var/lib/outpost
+```
+
+Linux on amd64 or arm64, with systemd. Anything else takes the container image.
+
+### With Docker
 
 ```bash
 docker compose up -d
@@ -61,24 +95,14 @@ The second command prints the API key the outpost generated on first start. Copy
 it into upcore (see [Wiring it into upcore](#wiring-it-into-upcore)) — the key is
 printed once, in a banner, and never again.
 
-Or with the install script, which writes a compose file to `/opt/outpost` and
-starts it:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/upcore-app/outpost/main/install.sh | sudo sh -s -- \
-  --upcore-url https://status.example.com \
-  --setup-key ost_… \
-  --location Frankfurt
-```
-
-Verify it works:
+### Verify either one
 
 ```bash
 curl -s localhost:8080/healthz
 curl -s -H "Authorization: Bearer opk_…" localhost:8080/v1/info
 ```
 
-Without Docker:
+### From source
 
 ```bash
 go build -o outpost .
@@ -117,17 +141,28 @@ key and shows the deploy command with it already filled in.
 
 What happens on first start:
 
-1. The outpost resolves its API key as always — generated and stored in `/data`,
-   or pinned with `OUTPOST_API_KEY`.
+1. The outpost resolves its API key as always — generated and stored in the data
+   directory (`/data` in the container, `/var/lib/outpost` under systemd), or
+   pinned with `OUTPOST_API_KEY`.
 2. It waits for its own listener, then posts once to
    `POST <upcore>/api/outposts/enroll`:
    `{"token": "ost_…", "apiKey": "opk_…", "port": 8080}`, plus `"url"` when
    `OUTPOST_PUBLIC_URL` is set.
-3. **upcore calls back.** It asks `GET /v1/info` at that URL with the key it was
-   just given, and writes nothing unless the outpost answers. A wrong URL, a
-   closed port or a proxy in the way fails here, at deploy time.
-4. On success the outpost writes `/data/enrolled` and never enrolls again. The
-   setup key is single use and expires after 24 hours.
+3. **upcore calls back.** It asks `GET /v1/info` with the key it was just given,
+   trying every address the outpost could be at — the one it reported, and the
+   source address of the enrollment — repeatedly, for about twenty seconds. A
+   container that has only just started is a moving target, so one attempt
+   against one guessed address is not enough.
+4. The outpost writes an `enrolled` marker into its data directory and never
+   enrolls again. The setup key is single use and expires after 24 hours.
+
+**A callback that does not answer no longer throws the enrollment away.** upcore
+answers `202` instead of `201`, creates the outpost anyway, and shows it in the
+admin list as *wird geprüft* with the reason underneath — `connection refused`,
+`timeout`, whichever it was. It keeps retrying in the background, so opening the
+port is enough to make it go green; nothing has to be deployed again. Until it
+verifies, no checks are dispatched to it, so an unreachable probe cannot become
+a location that silently never votes.
 
 Where upcore should call back is the one thing the outpost cannot always know.
 Without `OUTPOST_PUBLIC_URL`, upcore uses the source address it saw the

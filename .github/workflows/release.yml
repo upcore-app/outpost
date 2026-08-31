@@ -1,0 +1,63 @@
+# Publishes the Linux binaries install.sh downloads. Without this workflow the
+# script has nothing to fetch: it resolves the newest release and expects
+# `outpost_linux_<arch>` and `checksums.txt` to be attached to it.
+#
+# One runner builds both architectures. CGO is off and the module has no
+# third-party dependencies, so cross-compiling is a matter of two env vars —
+# there is nothing here that would benefit from a native arm64 runner the way
+# the container image build does.
+name: release
+
+on:
+  release:
+    types: [published]
+  # Rebuild the assets of an existing release without cutting a new one.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach the binaries to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: build and attach binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23"
+          cache: false
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Build
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            echo "building linux/$arch"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=$TAG" \
+              -o "dist/outpost_linux_$arch" .
+          done
+
+      # Relative names on purpose: install.sh matches the second field against
+      # the asset name, and a path prefix would never match.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum outpost_linux_* > checksums.txt
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/outpost_linux_amd64 dist/outpost_linux_arm64 dist/checksums.txt --clobber
