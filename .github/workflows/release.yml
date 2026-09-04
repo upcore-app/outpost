@@ -24,7 +24,7 @@ permissions:
 jobs:
   binaries:
     name: build and attach binaries
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
