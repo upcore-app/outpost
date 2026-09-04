@@ -24,7 +24,7 @@ permissions:
 jobs:
   binaries:
     name: build and attach binaries
-    runs-on: makecore
+    runs-on: makecore-performance
     steps:
       - uses: actions/checkout@v5
         with:
