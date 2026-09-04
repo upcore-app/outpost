@@ -19,7 +19,15 @@
 </p>
 
 <p align="center">
-  A partner project by <strong><a href="https://galaxybot.app">GalaxyBot</a></strong> and <strong><a href="https://hypeserv.com">HypeServ</a></strong>.
+  <a href="https://upcore.app">Website</a> ·
+  <a href="https://docs.upcore.app">Documentation</a> ·
+  <a href="https://go.upcore.app/register">Cloud</a> ·
+  <a href="https://github.com/upcore-app/upcore">upcore</a> ·
+  <a href="LICENSE.md">License</a>
+</p>
+
+<p align="center">
+  A partner project by <strong><a href="https://galaxybot.app">GalaxyBot</a></strong> and <strong><a href="https://onesrv.net">onesrv</a></strong>.
 </p>
 
 ---
@@ -41,6 +49,11 @@ Everything after that is inbound again.
 
 Written in Go with the standard library only: no third-party modules, no
 `go.sum`, a single static binary.
+
+Not running upcore yourself? [upcore Cloud](https://go.upcore.app/register)
+dispatches to your outposts the same way — the probe never needs to know which
+of the two it is talking to. The documentation for both lives at
+[docs.upcore.app](https://docs.upcore.app).
 
 ## Quick start
 
@@ -550,4 +563,4 @@ Use it, modify it, run it yourself, for anything that is not a competing
 commercial product or service. Two years after each version is published it
 becomes available under the Apache License 2.0.
 
-Copyright 2026 GalaxyBot &amp; HypeServ.
+Copyright 2026 GalaxyBot &amp; onesrv.
