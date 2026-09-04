@@ -24,6 +24,15 @@ type Config struct {
 	MaxChecks      int
 	LogRequests    bool
 
+	// Whether upcore may ask this outpost to upgrade itself, and — for a
+	// deployment that is neither a systemd install nor a container — the command
+	// that carries it out. See internal/update for what each method means.
+	//
+	// The switch defaults to on: an outpost is deployed to be run by upcore, and
+	// an operator who manages the fleet from somewhere else can say so once.
+	UpdateEnabled bool
+	UpdateCommand string
+
 	// Auto-setup. All three are empty in a hand-registered deployment; the two
 	// below go together, and internal/enroll says so when only one is set.
 	//
@@ -64,6 +73,8 @@ func Load(log *slog.Logger) Config {
 		MaxConcurrency: envInt(log, "OUTPOST_MAX_CONCURRENCY", defaultMaxConcurrency, minConcurrency, maxConcurrency),
 		MaxChecks:      envInt(log, "OUTPOST_MAX_CHECKS", defaultMaxChecks, minChecks, maxChecks),
 		LogRequests:    envBool(log, "OUTPOST_LOG_REQUESTS", true),
+		UpdateEnabled:  envBool(log, "OUTPOST_UPDATE_ENABLED", true),
+		UpdateCommand:  env("OUTPOST_UPDATE_COMMAND", ""),
 		UpcoreURL:      strings.TrimRight(env("OUTPOST_UPCORE_URL", ""), "/"),
 		SetupKey:       env("OUTPOST_SETUP_KEY", ""),
 		PublicURL:      strings.TrimRight(env("OUTPOST_PUBLIC_URL", ""), "/"),

@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/upcore-app/outpost/internal/check"
+	"github.com/upcore-app/outpost/internal/update"
 )
 
 type healthResponse struct {
@@ -26,6 +29,28 @@ type infoResponse struct {
 	MaxChecks      int      `json:"maxChecks"`
 	StartedAt      string   `json:"startedAt"`
 	UptimeSeconds  int      `json:"uptimeSeconds"`
+
+	// How this deployment can be upgraded, whether upcore may offer a button for
+	// it, and what came of the last attempt. `canUpdate` is not implied by
+	// `updateMethod`: a container reports "docker" and cannot be updated from
+	// here, which is a different sentence from "nothing is wired up".
+	UpdateMethod string       `json:"updateMethod"`
+	CanUpdate    bool         `json:"canUpdate"`
+	UpdateHint   string       `json:"updateHint,omitempty"`
+	Update       update.State `json:"update"`
+}
+
+// updateRequest is the body of POST /v1/update. An empty version means "the
+// latest release"; internal/update decides what shape a tag may have, because
+// the string reaches a privileged script as an argument.
+type updateRequest struct {
+	Version string `json:"version"`
+}
+
+type updateResponse struct {
+	Accepted bool         `json:"accepted"`
+	Method   string       `json:"method"`
+	Update   update.State `json:"update"`
 }
 
 type checksRequest struct {
@@ -59,6 +84,57 @@ func (s *server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 		MaxChecks:      s.cfg.MaxChecks,
 		StartedAt:      s.startedAt,
 		UptimeSeconds:  int(time.Since(s.started).Seconds()),
+		UpdateMethod:   string(s.updater.Method()),
+		CanUpdate:      s.updater.CanApply(),
+		UpdateHint:     s.updater.Hint(),
+		Update:         s.updater.State(),
+	})
+}
+
+// handleUpdate accepts an upgrade request from upcore and answers 202: on every
+// method that works, the outpost is restarted out from under this response, so
+// there is nothing to wait for and nothing useful to say afterwards. upcore
+// learns the outcome from the next GET /v1/info, which reads the state file the
+// update wrote before it began (see internal/update).
+//
+// An empty body is legal and means "the latest release" — that is the request
+// the dashboard's button sends, and requiring a version there would mean upcore
+// had to know the release list before it could ask for anything.
+func (s *server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpdateBodyBytes)
+
+	var req updateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	state, err := s.updater.Apply(req.Version)
+	switch {
+	case errors.Is(err, update.ErrBadVersion):
+		writeError(w, http.StatusBadRequest, "not a release tag: "+req.Version)
+		return
+	case errors.Is(err, update.ErrBusy):
+		// 409 rather than 202: the caller asked for a second update, and got
+		// neither a new one nor a failure. The state says which one is running.
+		writeJSON(w, http.StatusConflict, updateResponse{
+			Accepted: false, Method: string(s.updater.Method()), Update: state,
+		})
+		return
+	case errors.Is(err, update.ErrUnsupported):
+		// 501, because the request is well formed and this host simply has no
+		// way to carry it out. The hint on /v1/info says what would.
+		writeJSON(w, http.StatusNotImplemented, updateResponse{
+			Accepted: false, Method: string(s.updater.Method()), Update: state,
+		})
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "cannot start the update: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, updateResponse{
+		Accepted: true, Method: string(s.updater.Method()), Update: state,
 	})
 }
 

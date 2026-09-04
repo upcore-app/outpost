@@ -19,6 +19,7 @@ import (
 	"github.com/upcore-app/outpost/internal/config"
 	"github.com/upcore-app/outpost/internal/enroll"
 	"github.com/upcore-app/outpost/internal/server"
+	"github.com/upcore-app/outpost/internal/update"
 )
 
 // version is a var, not a const, so the build can stamp it:
@@ -56,7 +57,17 @@ func main() {
 	}
 	enrollment.APIKey = key
 
-	srv := server.New(cfg, key, version, log)
+	// Built before the server because its constructor settles what became of an
+	// update that was running when this process last stopped — the version below
+	// is the evidence, and this is the only moment it can be read.
+	updater := update.New(update.Options{
+		Enabled: cfg.UpdateEnabled,
+		Command: cfg.UpdateCommand,
+		DataDir: cfg.DataDir,
+		Version: version,
+	}, log)
+
+	srv := server.New(cfg, key, version, updater, log)
 
 	log.Info("outpost starting",
 		"version", version,
@@ -66,8 +77,13 @@ func main() {
 		"country", cfg.Country,
 		"maxConcurrency", cfg.MaxConcurrency,
 		"maxChecks", cfg.MaxChecks,
+		"updateMethod", string(updater.Method()),
 		"apiKey", apikey.Masked(key),
 	)
+
+	if state := updater.State(); state.State != "" {
+		log.Info("last update", "state", state.State, "target", state.TargetVersion, "message", state.Message)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

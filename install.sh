@@ -7,17 +7,28 @@
 #     --upcore-url https://status.example.com \
 #     --setup-key ost_…
 #
-# The script owns exactly four paths and nothing else:
+# The script owns these paths and nothing else:
 #
 #   /usr/local/bin/outpost            the binary
+#   /usr/local/bin/outpost-update     the updater, run as root by systemd
+#   /usr/local/lib/outpost/install.sh a copy of this script, for the updater
 #   /etc/outpost/outpost.env          the configuration
 #   /etc/systemd/system/outpost.service
+#   /etc/systemd/system/outpost-update.service
+#   /etc/systemd/system/outpost-update.path
 #   /var/lib/outpost                  the API key and the enrollment marker
 #
 # Running it again is how an outpost is upgraded: the binary is replaced, the
 # data directory is left alone, and any setting not given again is carried over
 # from the existing configuration. The API key therefore survives an upgrade,
 # which is what keeps upcore talking to the same outpost afterwards.
+#
+# The update button in upcore's dashboard is that same upgrade, reached the long
+# way round. The outpost service is unprivileged and cannot write its own binary
+# — deliberately, since a probe that could rewrite itself would turn any bug in
+# a check into persistence. So it writes a request file into its data directory,
+# outpost-update.path notices, and outpost-update.service re-runs this script as
+# root. The privilege stays where it was; only the trigger is remote.
 #
 # Without --setup-key it installs a plain outpost and prints the API key to
 # paste into upcore by hand.
@@ -31,6 +42,13 @@ ENV_FILE="$ETC_DIR/outpost.env"
 DATA_DIR="/var/lib/outpost"
 UNIT="/etc/systemd/system/outpost.service"
 SERVICE_USER="outpost"
+
+# The updater. LIB_DIR holds the copy of this script that outpost-update runs,
+# so an update needs nothing from the network but the release itself.
+LIB_DIR="/usr/local/lib/outpost"
+UPDATER="/usr/local/bin/outpost-update"
+UPDATE_UNIT="/etc/systemd/system/outpost-update.service"
+UPDATE_PATH_UNIT="/etc/systemd/system/outpost-update.path"
 
 VERSION=""
 PORT=""
@@ -106,12 +124,15 @@ command -v systemctl >/dev/null 2>&1 || die "this system does not run systemd �
 # ---------------------------------------------------------------------------
 
 if [ "$UNINSTALL" = "yes" ]; then
+	# The path unit first: it would otherwise start the updater one last time
+	# when the data directory is touched on the way out.
+	systemctl disable --now outpost-update.path >/dev/null 2>&1 || true
 	systemctl disable --now outpost.service >/dev/null 2>&1 || true
-	rm -f "$UNIT"
+	rm -f "$UNIT" "$UPDATE_UNIT" "$UPDATE_PATH_UNIT"
 	systemctl daemon-reload
-	rm -f "$BIN"
-	rm -rf "$ETC_DIR"
-	echo "→ removed the service, the binary and $ETC_DIR"
+	rm -f "$BIN" "$UPDATER"
+	rm -rf "$ETC_DIR" "$LIB_DIR"
+	echo "→ removed the services, the binaries and $ETC_DIR"
 	echo "  $DATA_DIR was kept: it holds the API key upcore knows this outpost by."
 	echo "  Remove it with: rm -rf $DATA_DIR"
 	exit 0
@@ -289,6 +310,157 @@ EOF
 chmod 644 "$UNIT"
 
 # ---------------------------------------------------------------------------
+# The updater
+# ---------------------------------------------------------------------------
+#
+# What makes the button in upcore's dashboard work, and the reason it is built
+# this way: the outpost service is unprivileged, has ProtectSystem=strict, and
+# can write nothing but its data directory. It therefore cannot replace
+# /usr/local/bin/outpost, and giving it the right to would mean any bug in a
+# check became a way to rewrite the binary permanently.
+#
+# So the request crosses the privilege boundary as a file rather than as a call.
+# The outpost writes $DATA_DIR/update-request — the one directory it may write —
+# and a path unit starts a root-run oneshot that re-runs this script. Nothing
+# about the probe's privileges changes; only the trigger is remote.
+#
+# The installer is re-run from a local copy, not downloaded again: a remotely
+# triggered root script should execute the code that was reviewed when the
+# outpost was installed, not whatever is on a branch today. The release binary
+# it downloads is still checked against the published checksum.
+
+mkdir -p "$LIB_DIR"
+chmod 755 "$LIB_DIR"
+
+# "$0" is this script when it was run from a file, and is not readable when it
+# came through a pipe (curl | sh). The pipe is the documented install path, so
+# the copy is fetched in that case — this is install time, with an operator
+# watching, which is the moment where reaching for the network is fine.
+if [ "$0" = "$LIB_DIR/install.sh" ]; then
+	# This *is* the stored copy: an update in progress, re-running it. Copying a
+	# file onto itself is an error, and there is nothing to refresh.
+	:
+elif [ -f "$0" ] && [ -r "$0" ]; then
+	install -m 755 "$0" "$LIB_DIR/install.sh"
+elif curl -fsSL "https://raw.githubusercontent.com/$REPO/main/install.sh" -o "$LIB_DIR/install.sh.new"; then
+	chmod 755 "$LIB_DIR/install.sh.new"
+	mv -f "$LIB_DIR/install.sh.new" "$LIB_DIR/install.sh"
+else
+	rm -f "$LIB_DIR/install.sh.new"
+	echo "note: could not store a copy of the installer — updates from the dashboard will not work" >&2
+fi
+
+# The privileged half. Everything it does is bounded: one request file, one
+# version string it validates itself, one local installer.
+cat >"$UPDATER" <<EOF
+#!/bin/sh
+# Written by install.sh. Runs as root from outpost-update.service, which
+# outpost-update.path starts the moment the outpost writes an update request.
+#
+# Do not call this by hand to upgrade — run $LIB_DIR/install.sh directly. This
+# exists to be the thing on the other side of a file the probe can write.
+set -eu
+
+DATA_DIR="$DATA_DIR"
+INSTALLER="$LIB_DIR/install.sh"
+SERVICE_USER="$SERVICE_USER"
+REQUEST="\$DATA_DIR/update-request"
+RESULT="\$DATA_DIR/update-result"
+
+# How the outpost learns what happened without waiting for a restart that, on a
+# failure, never comes. Two lines: a verdict and a reason.
+result() {
+	umask 077
+	printf '%s\n%s\n' "\$1" "\$2" >"\$RESULT.tmp"
+	# Owned by the service user so the probe can read it — and remove it, which
+	# it can already do, owning the directory.
+	chown "\$SERVICE_USER:\$SERVICE_USER" "\$RESULT.tmp" 2>/dev/null || true
+	mv -f "\$RESULT.tmp" "\$RESULT"
+}
+
+fail() {
+	echo "outpost-update: \$*" >&2
+	result failed "\$*"
+	exit 1
+}
+
+[ -f "\$REQUEST" ] || exit 0
+
+VERSION=\$(head -n 1 "\$REQUEST" | tr -d '\r\n')
+
+# Removed before anything else: the path unit fires on the file existing, so a
+# request left in place would start this again as soon as it finished.
+rm -f "\$REQUEST"
+
+# The version arrived over the network. It is checked here as well as in the Go
+# side, because this is the process that passes it to a downloader as an
+# argument — a check on the other side of a file is not a check. The first
+# character is spelled out separately so a tag can never begin with a dash and
+# be read as an option.
+case "\$VERSION" in
+"") ;;
+[!A-Za-z0-9]*) fail "refusing a version that does not start with a letter or a digit: \$VERSION" ;;
+*[!A-Za-z0-9._+-]*) fail "refusing a version with unexpected characters: \$VERSION" ;;
+esac
+
+[ -f "\$INSTALLER" ] || fail "no installer at \$INSTALLER — run install.sh on this host once more"
+
+echo "outpost-update: upgrading to \${VERSION:-the latest release}"
+if [ -n "\$VERSION" ]; then
+	sh "\$INSTALLER" --version "\$VERSION" ||
+		fail "the installer failed for \$VERSION (journalctl -u outpost-update)"
+else
+	sh "\$INSTALLER" ||
+		fail "the installer failed (journalctl -u outpost-update)"
+fi
+
+# Only that it ran. Whether a *newer* outpost is now running is decided by the
+# process itself, which compares the version it was asked to leave behind with
+# the one it started as (see internal/update).
+result ok "Der Updater ist durchgelaufen."
+EOF
+chmod 755 "$UPDATER"
+
+cat >"$UPDATE_UNIT" <<EOF
+# Written by install.sh. Re-run the script to change it.
+[Unit]
+Description=upcore outpost updater
+Documentation=https://github.com/$REPO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATER
+# Root, and none of outpost.service's hardening: replacing a binary and
+# restarting a unit is exactly what this is for, and is exactly what the probe
+# itself must never be able to do. Keeping the two apart is the whole design.
+#
+# A slow link plus a release download plus the installer's own wait for the
+# service to come back up. Ten minutes is generous and still finite.
+TimeoutStartSec=600
+EOF
+chmod 644 "$UPDATE_UNIT"
+
+cat >"$UPDATE_PATH_UNIT" <<EOF
+# Written by install.sh. Re-run the script to change it.
+[Unit]
+Description=Watch for an update request from upcore
+Documentation=https://github.com/$REPO
+
+[Path]
+# The outpost's data directory is the only place the unprivileged service may
+# write, which is what makes this the crossing point. The updater removes the
+# file first thing, so the trigger re-arms for the next request.
+PathExists=$DATA_DIR/update-request
+Unit=outpost-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 644 "$UPDATE_PATH_UNIT"
+
+# ---------------------------------------------------------------------------
 # Install and start
 # ---------------------------------------------------------------------------
 
@@ -299,6 +471,11 @@ mv -f "$BIN.new" "$BIN"
 
 systemctl daemon-reload
 systemctl enable outpost.service >/dev/null 2>&1 || true
+# The path unit is started, not just enabled: enabling alone would leave the
+# watch inactive until the next boot, and the dashboard's update button would
+# quietly do nothing until then.
+systemctl enable --now outpost-update.path >/dev/null 2>&1 ||
+	echo "note: could not enable outpost-update.path — updates from the dashboard will not work" >&2
 systemctl restart outpost.service
 
 # ---------------------------------------------------------------------------

@@ -62,19 +62,26 @@ curl -fsSL https://raw.githubusercontent.com/upcore-app/outpost/main/install.sh 
   --location Frankfurt
 ```
 
-It owns exactly four paths:
+It owns these paths and nothing else:
 
 | Path | What |
 | --- | --- |
 | `/usr/local/bin/outpost` | the binary |
+| `/usr/local/bin/outpost-update` | the updater, run as root by systemd |
+| `/usr/local/lib/outpost/install.sh` | a copy of this script, for the updater |
 | `/etc/outpost/outpost.env` | the configuration (`0640`, readable by the service user) |
 | `/etc/systemd/system/outpost.service` | the unit |
+| `/etc/systemd/system/outpost-update.{service,path}` | the updater and its trigger |
 | `/var/lib/outpost` | the API key and the enrollment marker (`0700`) |
 
 Running it again upgrades in place: the binary is replaced, the data directory
 is left alone, and any option not given again is carried over from the existing
 configuration. So a bare `install.sh` is the upgrade command, and because the
 API key lives in the data directory, upcore keeps talking to the same outpost.
+
+The last three paths are what makes the **Aktualisieren** button in upcore work
+— it runs exactly this upgrade, from the other side of a file the unprivileged
+service is allowed to write. See [Updating](#updating).
 
 ```bash
 systemctl status outpost      # is it running
@@ -126,6 +133,8 @@ start.
 | `OUTPOST_MAX_CONCURRENCY` | `50` | Probes in flight at once, clamped to [1, 500] |
 | `OUTPOST_MAX_CHECKS` | `200` | Checks per request, clamped to [1, 1000] |
 | `OUTPOST_LOG_REQUESTS` | `true` | One log line per request |
+| `OUTPOST_UPDATE_ENABLED` | `true` | Whether upcore may trigger an upgrade. `false` turns `POST /v1/update` into a 501 whatever is installed on the host |
+| `OUTPOST_UPDATE_COMMAND` | `""` | Run this instead of the built-in path. The escape hatch for a deployment that is neither a systemd install nor a container — see [Updating](#updating) |
 | `OUTPOST_UPCORE_URL` | `""` | upcore instance to enroll with, e.g. `https://status.example.com` |
 | `OUTPOST_SETUP_KEY` | `""` | One-time setup key from upcore (`ost_…`). Needs `OUTPOST_UPCORE_URL` |
 | `OUTPOST_PUBLIC_URL` | `""` | Where upcore reaches this outpost. Defaults to the source address of the enrollment plus `OUTPOST_ADDR`'s port |
@@ -217,6 +226,61 @@ docker compose exec outpost cat /data/apikey   # any time
 To rotate a key, delete `/data/apikey` and restart, or set `OUTPOST_API_KEY` to
 a value you generated yourself. Then update the outpost in upcore.
 
+## Updating
+
+upcore's admin list shows each probe's version and marks the ones behind the
+newest release. Where the deployment supports it, an **Aktualisieren** button
+does the upgrade from there.
+
+**The outpost never replaces its own binary.** The systemd service runs as an
+unprivileged user under `ProtectSystem=strict` with only its data directory
+writable — deliberately, because a probe that could rewrite `/usr/local/bin/
+outpost` would turn any bug in a check into persistence. So the request crosses
+the privilege boundary as a file:
+
+1. `POST /v1/update` writes `<data dir>/update-request` — the one directory the
+   service may write — and answers `202`.
+2. `outpost-update.path`, a systemd path unit, notices the file.
+3. `outpost-update.service` runs as root, removes the request, validates the
+   version, and re-runs the stored copy of `install.sh`.
+4. The installer downloads the release, **verifies its published checksum**,
+   replaces the binary and restarts the service.
+5. The new process compares the version it started as with the one recorded in
+   `update.json`. That comparison — not the installer's exit code — is what
+   makes the upgrade "done", and it is reported on the next `GET /v1/info`.
+
+`install.sh` writes all of that; an outpost installed before this existed picks
+it up by running the script once more. The installer it re-runs is the local
+copy at `/usr/local/lib/outpost/install.sh`, not a fresh download: a remotely
+triggered root script should run the code that was reviewed when the outpost was
+installed. Re-running `install.sh` by hand is what refreshes it.
+
+Watch it happen:
+
+```bash
+journalctl -u outpost-update -f
+```
+
+### The other deployments
+
+| `updateMethod` | What it means |
+| --- | --- |
+| `systemd` | The units above are installed. The button works. |
+| `command` | `OUTPOST_UPDATE_COMMAND` is set and is run instead, with `OUTPOST_TARGET_VERSION` and `OUTPOST_CURRENT_VERSION` in its environment. |
+| `docker` | A container. It cannot meaningfully replace its own image, so the button is not offered — `docker compose pull && docker compose up -d`. |
+| `none` | Nothing is wired up, or `OUTPOST_UPDATE_ENABLED=false`. |
+
+`OUTPOST_UPDATE_COMMAND` is the escape hatch for a Kubernetes rollout, a
+configuration-management run, or anything else that owns the lifecycle. Note
+that a command which restarts this service kills its own caller — systemd stops
+the whole control group — which is fine: the next start works out what happened
+from the recorded version. It is also why the systemd path uses a separate unit
+rather than a child process.
+
+The version to install is only ever passed on as a release tag, and is checked
+against `^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$` in the Go handler *and* again in
+the root-run script. A check on the other side of a file is not a check.
+
 ## API
 
 All requests and responses are JSON. Authentication is a single API key,
@@ -262,9 +326,50 @@ curl -s -H "Authorization: Bearer opk_…" localhost:8080/v1/info
   "maxConcurrency": 50,
   "maxChecks": 200,
   "startedAt": "2026-08-31T18:00:00Z",
-  "uptimeSeconds": 1234
+  "uptimeSeconds": 1234,
+  "updateMethod": "systemd",
+  "canUpdate": true,
+  "update": {
+    "state": "done",
+    "fromVersion": "0.1.0",
+    "targetVersion": "v0.2.0",
+    "startedAt": "2026-09-04T10:12:00Z",
+    "finishedAt": "2026-09-04T10:12:44Z",
+    "message": "Aktualisiert von 0.1.0 auf 0.2.0."
+  }
 }
 ```
+
+`updateMethod` is `systemd`, `command`, `docker` or `none`, and `canUpdate` is
+not implied by it: a container names its method and still cannot replace its own
+image. `updateHint` — present only when there is no button to offer — is the
+sentence upcore shows in its place. See [Updating](#updating).
+
+### `POST /v1/update` — auth required
+
+Asks the outpost to upgrade itself. An empty `version` means the newest release.
+
+```bash
+curl -s -X POST localhost:8080/v1/update \
+  -H "Authorization: Bearer opk_…" \
+  -H "Content-Type: application/json" \
+  -d '{"version": "v0.2.0"}'
+```
+
+```json
+{
+  "accepted": true,
+  "method": "systemd",
+  "update": {"state": "running", "fromVersion": "0.1.0", "targetVersion": "v0.2.0",
+             "startedAt": "2026-09-04T10:12:00Z"}
+}
+```
+
+`202` on acceptance — and that is all it can be, because a successful upgrade
+restarts this process out from under the response. The outcome is read back from
+`GET /v1/info` afterwards; the state survives the restart in a file. `409` means
+an update is already running, `501` that this deployment has no way to carry one
+out, `400` that the version is not shaped like a release tag.
 
 ### `POST /v1/checks` — auth required
 

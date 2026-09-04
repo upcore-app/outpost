@@ -10,6 +10,7 @@ import (
 
 	"github.com/upcore-app/outpost/internal/check"
 	"github.com/upcore-app/outpost/internal/config"
+	"github.com/upcore-app/outpost/internal/update"
 )
 
 const (
@@ -17,6 +18,10 @@ const (
 	// MiB is generous while still bounding what an unauthenticated caller can
 	// make the process buffer.
 	maxBodyBytes = 1 << 20
+
+	// maxUpdateBodyBytes: the update request carries one release tag. A KiB is
+	// already three orders of magnitude more than that.
+	maxUpdateBodyBytes = 1 << 10
 
 	// maxIDLength is what upcore needs for a monitor id in any encoding it may
 	// pick later; longer means the caller is sending something else entirely.
@@ -40,6 +45,7 @@ type server struct {
 	version string
 	log     *slog.Logger
 	runner  *check.Runner
+	updater *update.Manager
 
 	// started keeps its monotonic reading, so uptime measures elapsed time and
 	// not the effect of an NTP step; startedAt is the wall-clock instant, which
@@ -50,7 +56,10 @@ type server struct {
 
 // New wires the handlers and returns a server ready to listen. Lifecycle
 // (listening, signals, draining) stays with the caller.
-func New(cfg config.Config, apiKey, version string, log *slog.Logger) *http.Server {
+// The updater is passed in rather than built here: main constructs it before
+// the server so its startup reconcile (see internal/update) is part of the boot
+// log, and so a deployment that wires one up differently has somewhere to do it.
+func New(cfg config.Config, apiKey, version string, updater *update.Manager, log *slog.Logger) *http.Server {
 	now := time.Now()
 	s := &server{
 		cfg:       cfg,
@@ -58,6 +67,7 @@ func New(cfg config.Config, apiKey, version string, log *slog.Logger) *http.Serv
 		version:   version,
 		log:       log,
 		runner:    check.NewRunner(cfg.MaxConcurrency),
+		updater:   updater,
 		started:   now,
 		startedAt: now.UTC().Format(time.RFC3339),
 	}
@@ -85,6 +95,13 @@ func (s *server) routes() http.Handler {
 
 	mux.Handle("GET /v1/info", s.authenticated(http.HandlerFunc(s.handleInfo)))
 	mux.HandleFunc("/v1/info", methodNotAllowed(http.MethodGet))
+
+	// The only endpoint that changes the host rather than reporting on it. It is
+	// authenticated like the others and does nothing this deployment was not
+	// already set up for: see internal/update on why the probe asks instead of
+	// replacing its own binary.
+	mux.Handle("POST /v1/update", s.authenticated(http.HandlerFunc(s.handleUpdate)))
+	mux.HandleFunc("/v1/update", methodNotAllowed(http.MethodPost))
 
 	mux.Handle("POST /v1/checks", s.authenticated(http.HandlerFunc(s.handleChecks)))
 	mux.HandleFunc("/v1/checks", methodNotAllowed(http.MethodPost))
