@@ -18,7 +18,7 @@ env:
 jobs:
   check:
     name: vet, build, test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -52,7 +52,7 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runner: self-hosted
+            runner: ubuntu-22.04
           - platform: linux/arm64
             runner: ubuntu-22.04-arm64
     runs-on: ${{ matrix.runner }}
@@ -116,7 +116,7 @@ jobs:
   manifest:
     name: push the manifest
     needs: image
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
