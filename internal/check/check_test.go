@@ -135,11 +135,99 @@ func TestRunHTTPMeasuresLatency(t *testing.T) {
 	}
 }
 
+// The point of the Range header is traffic: a monitor must not pull the whole
+// representation once per interval just to read a status line.
+func TestRunHTTPAsksForAPrefixOnly(t *testing.T) {
+	var seen string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Range")
+		w.WriteHeader(http.StatusPartialContent)
+	}))
+	defer ts.Close()
+
+	got := NewRunner(1).Run(context.Background(), []Check{{ID: "1", Type: "http", Target: ts.URL, Timeout: 5}})[0]
+	if seen != "bytes=0-2047" {
+		t.Errorf("Range = %q, want %q", seen, "bytes=0-2047")
+	}
+	if got.Status != StatusUp {
+		t.Errorf("status = %d, want %d", got.Status, StatusUp)
+	}
+}
+
+// A monitor's own Range wins, and a server that refuses ours still answered.
+func TestRunHTTPRangeEdges(t *testing.T) {
+	var seen string
+	custom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Range")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer custom.Close()
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer empty.Close()
+
+	runner := NewRunner(2)
+	got := runner.Run(context.Background(), []Check{{
+		ID: "1", Type: "http", Target: custom.URL, Timeout: 5,
+		HTTPHeaders: []Header{{Name: "Range", Value: "bytes=0-99"}},
+	}})[0]
+	if seen != "bytes=0-99" {
+		t.Errorf("Range = %q, want the monitor's own %q", seen, "bytes=0-99")
+	}
+	if got.Status != StatusUp {
+		t.Errorf("status = %d, want %d", got.Status, StatusUp)
+	}
+
+	got = runner.Run(context.Background(), []Check{{ID: "2", Type: "http", Target: empty.URL, Timeout: 5}})[0]
+	if got.Status != StatusUp {
+		t.Errorf("416 status = %d, want %d", got.Status, StatusUp)
+	}
+	if got.Message != "416 · Leere Antwort" {
+		t.Errorf("416 message = %q", got.Message)
+	}
+}
+
+func TestSearchableContentType(t *testing.T) {
+	cases := map[string]bool{
+		"":                                  true,
+		"text/html; charset=utf-8":          true,
+		"text/plain":                        true,
+		"application/json":                  true,
+		"application/ld+json":               true,
+		"application/atom+xml":              true,
+		"application/x-www-form-urlencoded": true,
+		"not a media type":                  true,
+		"video/mp4":                         false,
+		"image/png":                         false,
+		"audio/mpeg":                        false,
+		"font/woff2":                        false,
+		"application/pdf":                   false,
+		"application/octet-stream":          false,
+		"application/zip":                   false,
+	}
+
+	for contentType, want := range cases {
+		if got := searchableContentType(contentType); got != want {
+			t.Errorf("searchableContentType(%q) = %v, want %v", contentType, got, want)
+		}
+	}
+}
+
 func TestRunKeyword(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"state":"ok","queue":0}`))
 	}))
 	defer ts.Close()
+
+	// Answers with a media type no keyword can live in. The body must never be
+	// read, so writing it here would be a lie — the header is the whole test.
+	video := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer video.Close()
 
 	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -176,6 +264,12 @@ func TestRunKeyword(t *testing.T) {
 			check:       Check{ID: "4", Type: "keyword", Target: ts.URL, Timeout: 5},
 			wantStatus:  StatusDown,
 			wantMessage: "Kein Keyword angegeben",
+		},
+		{
+			name:        "a media body is refused before it is read",
+			check:       Check{ID: "5", Type: "keyword", Target: video.URL, Keyword: "ok", Timeout: 5},
+			wantStatus:  StatusDown,
+			wantMessage: "200 · Kein durchsuchbarer Inhalt (video/mp4)",
 		},
 	}
 
